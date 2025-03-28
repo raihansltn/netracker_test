@@ -8,7 +8,7 @@
 #define IPPROTO_TCP 6
 #define SYN_FLAG 0x02
 
-// eBPF hash map to store connection timestamps
+//eBPF hash map to store connection timestamps
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u32);
@@ -16,7 +16,7 @@ struct {
     __uint(max_entries, 1024);
 } conn_map SEC(".maps");
 
-// Traffic Control (TC) ingress hook function
+//TC ingress hook function
 SEC("tc_ing")
 int tc_ingress(struct __sk_buff *ctx) {
     void *data_end = (void *)(__u64)ctx->data_end;
@@ -43,7 +43,7 @@ int tc_ingress(struct __sk_buff *ctx) {
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
 
-    if (tcp->syn && !tcp->ack) { // Track only SYN packets
+    if (tcp->syn && !tcp->ack) { //track SYN packet
         __u32 src_ip = bpf_ntohl(l3->saddr);
         __u64 timestamp = bpf_ktime_get_ns();
         bpf_map_update_elem(&conn_map, &src_ip, &timestamp, BPF_ANY);
@@ -52,7 +52,7 @@ int tc_ingress(struct __sk_buff *ctx) {
     return TC_ACT_OK;
 }
 
-// Traffic Control (TC) egress hook function
+//TC egress hook function
 SEC("tc_eg")
 int tc_egress(struct __sk_buff *ctx) {
     void *data_end = (void *)(__u64)ctx->data_end;
@@ -79,7 +79,7 @@ int tc_egress(struct __sk_buff *ctx) {
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
 
-    if (tcp->syn && !tcp->ack) { // Track only SYN packets
+    if (tcp->syn && !tcp->ack) { //track SYN packet
         __u32 src_ip = bpf_ntohl(l3->saddr);
         __u64 *start_time = bpf_map_lookup_elem(&conn_map, &src_ip);
         if (start_time) {
@@ -94,5 +94,4 @@ int tc_egress(struct __sk_buff *ctx) {
     return TC_ACT_OK;
 }
 
-// License declaration
 char __license[] SEC("license") = "GPL";

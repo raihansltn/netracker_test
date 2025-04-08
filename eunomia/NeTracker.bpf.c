@@ -14,7 +14,7 @@ struct conn_key_t {
     __u32 dst_ip;
     __u16 src_port;
     __u16 dst_port;
-}
+};
 
 //eBPF hash map to store connection timestamps
 struct {
@@ -25,7 +25,7 @@ struct {
 } conn_map SEC(".maps");
 
 //TC ingress hook function
-SEC("tc_ing")
+SEC("classifier/tc_ingress")
 int tc_ingress(struct __sk_buff *ctx) {
     void *data_end = (void *)(__u64)ctx->data_end;
     void *data = (void *)(__u64)ctx->data;
@@ -62,12 +62,12 @@ int tc_ingress(struct __sk_buff *ctx) {
         __u64 start_time = bpf_ktime_get_ns();
         bpf_map_update_elem(&conn_map, &key, &start_time, BPF_ANY);
     }
-
+    bpf_printk("Debug - TC ingress tracked SYN Packet");
     return TC_ACT_OK;
 }
 
 //TC egress hook function
-SEC("tc_eg")
+SEC("classifier/tc_egress")
 int tc_egress(struct __sk_buff *ctx) {
     void *data_end = (void *)(__u64)ctx->data_end;
     void *data = (void *)(__u64)ctx->data;
@@ -92,8 +92,8 @@ int tc_egress(struct __sk_buff *ctx) {
     tcp = (struct tcphdr *)(l3 + 1);
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
-
-    if (tcp->syn && !tcp->ack) { //this will be SYN-ACK packcet (server response)
+    bpf_printk("Debug - Reached egress");
+    if (tcp->syn && tcp->ack) { //this will be SYN-ACK packcet (server response)
         struct conn_key_t key = {
             .src_ip = bpf_ntohl(l3->daddr), //now this is flipped to match ingress
             .dst_ip = bpf_ntohl(l3->saddr),
@@ -101,17 +101,17 @@ int tc_egress(struct __sk_buff *ctx) {
             .dst_port = bpf_ntohs(tcp->source),
         };
         __u64 *start_time = bpf_map_lookup_elem(&conn_map, &key);
-
         if (start_time) {
+            bpf_printk("Debug - TC ingress hit");
+            bpf_printk("Debug - TC egress hit");
             __u64 elapsed_time = bpf_ktime_get_ns() - *start_time;
-            
             bpf_printk("[TC] SYNK-ACK RTT for %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u: %llu ns\n",
                 (key.src_ip >> 24) & 0xFF, (key.src_ip >> 16) & 0xFF,
                 (key.src_ip >> 8) & 0xFF, key.src_ip & 0xFF, key.src_port,
                 (key.dst_ip >> 24) & 0xFF, (key.dst_ip >> 16) & 0xFF,
                 (key.dst_ip >> 8) & 0xFF, key.dst_ip & 0xFF, key.dst_port,
                 elapsed_time);
-            bpf_map_delete_elem(&conn_map, &src_ip);
+            bpf_map_delete_elem(&conn_map, &key);
         }
     }
 

@@ -1,1 +1,1 @@
-{"bpf_skel":{"data_sections":[],"maps":[{"ident":"conn_map","name":"conn_map"},{"ident":"rodata","name":"NeTracke.rodata"}],"obj_name":"NeTracker_bpf","progs":[{"attach":"tc","link":true,"name":"tc_ingress"},{"attach":"tc","link":true,"name":"tc_egress"}]},"eunomia_version":"0.3.4"}
+{"bpf_skel":{"data_sections":[],"maps":[{"ident":"conn_map","name":"conn_map"},{"ident":"rodata","name":"NeTracke.rodata"}],"obj_name":"NeTracker_bpf","progs":[{"attach":"tc_ing","link":true,"name":"tc_ingress"},{"attach":"tc_eg","link":true,"name":"tc_egress"}]},"eunomia_version":"0.3.4"}

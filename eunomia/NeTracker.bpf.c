@@ -8,10 +8,18 @@
 #define IPPROTO_TCP 6
 #define SYN_FLAG 0x02
 
+//key
+struct conn_key_t {
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
+}
+
 //eBPF hash map to store connection timestamps
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u32);
+    __type(key, struct conn_key_t);
     __type(value, __u64);
     __uint(max_entries, 1024);
 } conn_map SEC(".maps");
@@ -44,9 +52,15 @@ int tc_ingress(struct __sk_buff *ctx) {
         return TC_ACT_OK;
 
     if (tcp->syn && !tcp->ack) { //track SYN packet
-        __u32 src_ip = bpf_ntohl(l3->saddr);
-        __u64 timestamp = bpf_ktime_get_ns();
-        bpf_map_update_elem(&conn_map, &src_ip, &timestamp, BPF_ANY);
+        struct conn_key_t key = {
+            .src_ip = bpf_ntohl(l3->saddr),
+            .dst_ip = bpf_ntohl(l3->daddr),
+            .src_port = bpf_ntohs(tcp->source),
+            .dst_port = bpf_ntohs(tcp->dest),
+        };
+
+        __u64 start_time = bpf_ktime_get_ns();
+        bpf_map_update_elem(&conn_map, &key, &start_time, BPF_ANY);
     }
 
     return TC_ACT_OK;
@@ -79,14 +93,24 @@ int tc_egress(struct __sk_buff *ctx) {
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
 
-    if (tcp->syn && !tcp->ack) { //track SYN packet
-        __u32 src_ip = bpf_ntohl(l3->saddr);
-        __u64 *start_time = bpf_map_lookup_elem(&conn_map, &src_ip);
+    if (tcp->syn && !tcp->ack) { //this will be SYN-ACK packcet (server response)
+        struct conn_key_t key = {
+            .src_ip = bpf_ntohl(l3->daddr), //now this is flipped to match ingress
+            .dst_ip = bpf_ntohl(l3->saddr),
+            .src_port = bpf_ntohs(tcp->dest),
+            .dst_port = bpf_ntohs(tcp->source),
+        };
+        __u64 *start_time = bpf_map_lookup_elem(&conn_map, &key);
+
         if (start_time) {
             __u64 elapsed_time = bpf_ktime_get_ns() - *start_time;
-            bpf_printk("[TC] SYN IP %u.%u.%u.%u took %llu ns to traverse",
-                       (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF, 
-                       (src_ip >> 8) & 0xFF, src_ip & 0xFF, elapsed_time);
+            
+            bpf_printk("[TC] SYNK-ACK RTT for %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u: %llu ns\n",
+                (key.src_ip >> 24) & 0xFF, (key.src_ip >> 16) & 0xFF,
+                (key.src_ip >> 8) & 0xFF, key.src_ip & 0xFF, key.src_port,
+                (key.dst_ip >> 24) & 0xFF, (key.dst_ip >> 16) & 0xFF,
+                (key.dst_ip >> 8) & 0xFF, key.dst_ip & 0xFF, key.dst_port,
+                elapsed_time);
             bpf_map_delete_elem(&conn_map, &src_ip);
         }
     }

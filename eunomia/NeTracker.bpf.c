@@ -14,7 +14,7 @@ struct conn_key_t {
     __u32 dst_ip;
     __u16 src_port;
     __u16 dst_port;
-};
+} __attribute__((packed));
 
 //eBPF hash map to store connection timestamps
 struct {
@@ -60,6 +60,7 @@ int tc_ingress(struct __sk_buff *ctx) {
         };
 
         __u64 start_time = bpf_ktime_get_ns();
+        bpf_printk("Debug - Adding conn key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port); 
         bpf_map_update_elem(&conn_map, &key, &start_time, BPF_ANY);
     }
     bpf_printk("Debug - TC ingress tracked SYN Packet");
@@ -93,15 +94,17 @@ int tc_egress(struct __sk_buff *ctx) {
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
     bpf_printk("Debug - Reached egress");
-    if (tcp->syn && tcp->ack) { //this will be SYN-ACK packcet (server response)
-        struct conn_key_t key = {
-            .src_ip = bpf_ntohl(l3->daddr), //now this is flipped to match ingress
+    if (tcp->syn && tcp->ack) {
+        struct conn_key_t key = { //this is flipped now to match the SYN
+            .src_ip = bpf_ntohl(l3->daddr),
             .dst_ip = bpf_ntohl(l3->saddr),
             .src_port = bpf_ntohs(tcp->dest),
             .dst_port = bpf_ntohs(tcp->source),
         };
+        bpf_printk("Debug - Looking for key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
         __u64 *start_time = bpf_map_lookup_elem(&conn_map, &key);
         if (start_time) {
+            bpf_printk("Debug - Found conn key at egress: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
             bpf_printk("Debug - TC ingress hit");
             bpf_printk("Debug - TC egress hit");
             __u64 elapsed_time = bpf_ktime_get_ns() - *start_time;

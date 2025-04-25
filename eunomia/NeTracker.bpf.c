@@ -25,7 +25,7 @@ struct {
 } conn_map SEC(".maps");
 
 //TC ingress hook function
-SEC("classifier/tc_ingress")
+SEC("tc/ingress")
 int tc_ingress(struct __sk_buff *ctx) {
     void *data_end = (void *)(__u64)ctx->data_end;
     void *data = (void *)(__u64)ctx->data;
@@ -60,15 +60,15 @@ int tc_ingress(struct __sk_buff *ctx) {
         };
 
         __u64 start_time = bpf_ktime_get_ns();
+        bpf_printk("Ingress key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
         bpf_printk("Debug - Adding conn key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port); 
         bpf_map_update_elem(&conn_map, &key, &start_time, BPF_ANY);
     }
-    bpf_printk("Debug - TC ingress tracked SYN Packet");
     return TC_ACT_OK;
 }
 
 //TC egress hook function
-SEC("classifier/tc_egress")
+SEC("tc/egress")
 int tc_egress(struct __sk_buff *ctx) {
     void *data_end = (void *)(__u64)ctx->data_end;
     void *data = (void *)(__u64)ctx->data;
@@ -93,14 +93,14 @@ int tc_egress(struct __sk_buff *ctx) {
     tcp = (struct tcphdr *)(l3 + 1);
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
-    bpf_printk("Debug - Reached egress");
     if (tcp->syn && tcp->ack) {
         struct conn_key_t key = { //this is flipped now to match the SYN
-            .src_ip = bpf_ntohl(l3->daddr),
-            .dst_ip = bpf_ntohl(l3->saddr),
-            .src_port = bpf_ntohs(tcp->dest),
-            .dst_port = bpf_ntohs(tcp->source),
+		.src_ip = bpf_ntohl(l3->daddr),
+		.dst_ip = bpf_ntohl(l3->saddr),
+		.src_port = bpf_ntohs(tcp->dest),
+		.dst_port = bpf_ntohs(tcp->source),
         };
+        bpf_printk("Egress key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
         bpf_printk("Debug - Looking for key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
         __u64 *start_time = bpf_map_lookup_elem(&conn_map, &key);
         if (start_time) {
@@ -109,11 +109,11 @@ int tc_egress(struct __sk_buff *ctx) {
             bpf_printk("Debug - TC egress hit");
             __u64 elapsed_time = bpf_ktime_get_ns() - *start_time;
             bpf_printk("[TC] SYNK-ACK RTT for %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u: %llu ns\n",
-                (key.src_ip >> 24) & 0xFF, (key.src_ip >> 16) & 0xFF,
-                (key.src_ip >> 8) & 0xFF, key.src_ip & 0xFF, key.src_port,
-                (key.dst_ip >> 24) & 0xFF, (key.dst_ip >> 16) & 0xFF,
-                (key.dst_ip >> 8) & 0xFF, key.dst_ip & 0xFF, key.dst_port,
-                elapsed_time);
+		    (bpf_ntohl(key.src_ip) >> 24) & 0xFF, (bpf_ntohl(key.src_ip) >> 16) & 0xFF,
+		    (bpf_ntohl(key.src_ip) >> 8) & 0xFF, bpf_ntohl(key.src_ip) & 0xFF, bpf_ntohs(key.src_port),
+		    (bpf_ntohl(key.dst_ip) >> 24) & 0xFF, (bpf_ntohl(key.dst_ip) >> 16) & 0xFF,
+		    (bpf_ntohl(key.dst_ip) >> 8) & 0xFF, bpf_ntohl(key.dst_ip) & 0xFF, bpf_ntohs(key.dst_port),
+		    elapsed_time);
             bpf_map_delete_elem(&conn_map, &key);
         }
     }

@@ -1,121 +1,154 @@
+#!/usr/bin/env python3
 from bcc import BPF
-from pyroute2 import IPRoute
+from struct import pack
 import socket
-import struct
+from time import sleep
 
 bpf_text = """
-#include <uapi/linux/bpf.h>
-#include <uapi/linux/if_ether.h>
-#include <uapi/linux/ip.h>
-#include <uapi/linux/tcp.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/bpf.h>
+#include <arpa/inet.h>
 
 #define TC_ACT_OK 0
+#define ETH_P_IP 0x0800 /* Internet Protocol packet */
+#define IPPROTO_TCP 6
+#define SYN_FLAG 0x02
 
+// Key for the connection map
 struct conn_key_t {
-    u32 src_ip;
-    u32 dst_ip;
-    u16 src_port;
-    u16 dst_port;
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
 };
 
-BPF_HASH(conn_map, struct conn_key_t, u64, 1024);
+// eBPF hash map to store connection timestamps
+BPF_HASH(conn_map, struct conn_key_t, __u64, 1024);
 
-int tc_ingress(struct __sk_buff *ctx) {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
+// TC ingress hook function
+int tc_ingress(struct sk_buff *skb) {
+    void *data_end = skb->data_end;
+    void *data = skb->data;
     struct ethhdr *eth = data;
 
-    if ((void *)(eth + 1) > data_end)
+    if (data + sizeof(struct ethhdr) > data_end) {
         return TC_ACT_OK;
+    }
 
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
+    if (ntohs(eth->h_proto) != ETH_P_IP) {
         return TC_ACT_OK;
+    }
 
-    struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > data_end || ip->protocol != IPPROTO_TCP)
+    struct iphdr *ip = data + sizeof(struct ethhdr);
+    if ((void *)(ip + 1) > data_end) {
         return TC_ACT_OK;
+    }
 
-    struct tcphdr *tcp = (void *)(ip + 1);
-    if ((void *)(tcp + 1) > data_end)
+    if (ip->protocol != IPPROTO_TCP) {
         return TC_ACT_OK;
+    }
 
-    if (tcp->syn && !tcp->ack) {
+    struct tcphdr *tcp = (void *)(ip + ip->ihl * 4);
+    if ((void *)(tcp + 1) > data_end) {
+        return TC_ACT_OK;
+    }
+
+    if (tcp->syn && !(tcp->ack)) { // Track SYN packet
         struct conn_key_t key = {
             .src_ip = ip->saddr,
             .dst_ip = ip->daddr,
-            .src_port = bpf_ntohs(tcp->source),
-            .dst_port = bpf_ntohs(tcp->dest),
+            .src_port = tcp->source,
+            .dst_port = tcp->dest,
         };
-        u64 ts = bpf_ktime_get_ns();
-        conn_map.update(&key, &ts);
+
+        __u64 start_time = bpf_ktime_get_ns();
+        bpf_trace_printk("Debug - Adding conn key: %u:%u -> %u:%u\\n", ntohl(key.src_ip), ntohs(key.src_port), ntohl(key.dst_ip), ntohs(key.dst_port));
+        conn_map.update(&key, &start_time);
     }
+
     return TC_ACT_OK;
 }
 
-int tc_egress(struct __sk_buff *ctx) {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
+// TC egress hook function
+int tc_egress(struct sk_buff *skb) {
+    void *data_end = skb->data_end;
+    void *data = skb->data;
     struct ethhdr *eth = data;
 
-    if ((void *)(eth + 1) > data_end)
+    if (data + sizeof(struct ethhdr) > data_end) {
         return TC_ACT_OK;
+    }
 
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
+    if (ntohs(eth->h_proto) != ETH_P_IP) {
         return TC_ACT_OK;
+    }
 
-    struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > data_end || ip->protocol != IPPROTO_TCP)
+    struct iphdr *ip = data + sizeof(struct ethhdr);
+    if ((void *)(ip + 1) > data_end) {
         return TC_ACT_OK;
+    }
 
-    struct tcphdr *tcp = (void *)(ip + 1);
-    if ((void *)(tcp + 1) > data_end)
+    if (ip->protocol != IPPROTO_TCP) {
         return TC_ACT_OK;
+    }
+
+    struct tcphdr *tcp = (void *)(ip + ip->ihl * 4);
+    if ((void *)(tcp + 1) > data_end) {
+        return TC_ACT_OK;
+    }
 
     if (tcp->syn && tcp->ack) {
-        struct conn_key_t key = {
+        struct conn_key_t key = { // Flipped to match SYN
             .src_ip = ip->daddr,
             .dst_ip = ip->saddr,
-            .src_port = bpf_ntohs(tcp->dest),
-            .dst_port = bpf_ntohs(tcp->source),
+            .src_port = tcp->dest,
+            .dst_port = tcp->source,
         };
 
-        u64 *start = conn_map.lookup(&key);
-        if (start) {
-            u64 delta = bpf_ktime_get_ns() - *start;
-            bpf_trace_printk("[BCC] SYN-ACK RTT: %u -> %u: %llu ns\\n", key.src_ip, key.dst_ip, delta);
+        bpf_trace_printk("Debug - Looking for key: %u:%u -> %u:%u\\n", ntohl(key.src_ip), ntohs(key.src_port), ntohl(key.dst_ip), ntohs(key.dst_port));
+        __u64 *start_time = conn_map.lookup(&key);
+        if (start_time) {
+            bpf_trace_printk("Debug - Found conn key at egress: %u:%u -> %u:%u\\n", ntohl(key.src_ip), ntohs(key.src_port), ntohl(key.dst_ip), ntohs(key.dst_port));
+            bpf_trace_printk("Debug - TC ingress hit\\n");
+            bpf_trace_printk("Debug - TC egress hit\\n");
+            __u64 elapsed_time = bpf_ktime_get_ns() - *start_time;
+            bpf_trace_printk("[TC] SYN-ACK RTT for %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u: %llu ns\\n",
+                             (ntohl(key.src_ip) >> 24) & 0xFF, (ntohl(key.src_ip) >> 16) & 0xFF,
+                             (ntohl(key.src_ip) >> 8) & 0xFF, ntohl(key.src_ip) & 0xFF, ntohs(key.src_port),
+                             (ntohl(key.dst_ip) >> 24) & 0xFF, (ntohl(key.dst_ip) >> 16) & 0xFF,
+                             (ntohl(key.dst_ip) >> 8) & 0xFF, ntohl(key.dst_ip) & 0xFF, ntohs(key.dst_port),
+                             elapsed_time);
             conn_map.delete(&key);
+            bpf_trace_printk("Debug - Reach End\\n");
         }
     }
+
     return TC_ACT_OK;
 }
 """
 
-#load BPF program
 b = BPF(text=bpf_text)
-fn_ingress = b.load_func("tc_ingress", BPF.SCHED_CLS)
-fn_egress = b.load_func("tc_egress", BPF.SCHED_CLS)
 
-#attach to interface via tc
-import subprocess
+#get ingress and egress funcs
+ingress_fn = b.load_func("tc_ingress", BPF.SCHED_CLS)
+egress_fn = b.load_func("tc_egress", BPF.SCHED_CLS)
 
-iface = "wlan0"
+interface = "eth0"
 
-def run_tc(cmd):
-    subprocess.call(cmd, shell=True)
-
-run_tc(f"tc qdisc del dev {iface} clsact 2>/dev/null")
-run_tc(f"tc qdisc add dev {iface} clsact")
-run_tc(f"tc filter add dev {iface} ingress bpf da obj /dev/null sec classifier/tc_ingress")
-run_tc(f"tc filter add dev {iface} egress bpf da obj /dev/null sec classifier/tc_egress")
-
-#use bcc to attach
-b.attach_sched_cls(fn_ingress, iface=iface, direction="ingress")
-b.attach_sched_cls(fn_egress, iface=iface, direction="egress")
-
-print("Monitoring SYN-ACK RTTs... Hit Ctrl+C to exit.")
+#attach bpf progs to hooks
 try:
-    b.trace_print()
-except KeyboardInterrupt:
-    print("Detaching...")
-    run_tc(f"tc qdisc del dev {iface} clsact")
+    b.attach_tc(func=ingress_fn, dev=interface, handle=0xFFF1, parent=BPF.TC_H_INGRESS, kind="clsact")
+    b.attach_tc(func=egress_fn, dev=interface, handle=0xFFF2, parent=BPF.TC_H_EGRESS, kind="clsact")
+    print(f"Attached BPF program to ingress and egress of interface {interface}")
 
+    try:
+        while True:
+            sleep(1)
+    except KeyboardInterrupt:
+        pass
+finally:
+    b.remove_tc(dev=interface, handle=0xFFF1, parent=BPF.TC_H_INGRESS, kind="clsact")
+    b.remove_tc(dev=interface, handle=0xFFF2, parent=BPF.TC_H_EGRESS, kind="clsact")
+    print(f"Detached BPF program from interface {interface}")

@@ -5,7 +5,7 @@ iface = "wlan0" #your interface, change it
 
 #This to simulate client and server ip
 num_packets = 10 #number of packets sent, change this based on your preference
-client_ip = "192.168.1.11" #your ip, change it
+client_ip = "192.168.1.13" #your ip, change it
 server_ip = "192.168.1.4" #the same
 server_port = 1234 #customizable
 delay = 1 #customizable

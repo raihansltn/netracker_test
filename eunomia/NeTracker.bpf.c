@@ -92,30 +92,26 @@ int tc_egress(struct __sk_buff *ctx) {
     tcp = (struct tcphdr *)(l3 + 1);
     if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
-    if (tcp->syn && tcp->ack) {
-        struct conn_key_t key = { //this is flipped now to match the SYN
+    if (tcp->fin && tcp->ack) {
+        struct conn_key_t key = { //flipped for egress lookup
             .src_ip = bpf_ntohl(l3->daddr),
             .dst_ip = bpf_ntohl(l3->saddr),
             .src_port = bpf_ntohs(tcp->dest),
             .dst_port = bpf_ntohs(tcp->source),
         };
-        bpf_printk("Debug - Looking for key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
+        bpf_printk("Debug - Looking for FIN-ACK key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
         __u64 *start_time = bpf_map_lookup_elem(&conn_map, &key);
         if (start_time) {
-            bpf_printk("Debug - Found conn key at egress: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
-            bpf_printk("Debug - TC ingress hit");
-            bpf_printk("Debug - TC egress hit");
-            __u64 elapsed_time = bpf_ktime_get_ns() - *start_time;
-            bpf_printk("[TC] SYNK-ACK RTT for %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u: %llu ns\n",
-		    (bpf_ntohl(key.src_ip) >> 24) & 0xFF, (bpf_ntohl(key.src_ip) >> 16) & 0xFF,
-		    (bpf_ntohl(key.src_ip) >> 8) & 0xFF, bpf_ntohl(key.src_ip) & 0xFF, bpf_ntohs(key.src_port),
-		    (bpf_ntohl(key.dst_ip) >> 24) & 0xFF, (bpf_ntohl(key.dst_ip) >> 16) & 0xFF,
-		    (bpf_ntohl(key.dst_ip) >> 8) & 0xFF, bpf_ntohl(key.dst_ip) & 0xFF, bpf_ntohs(key.dst_port),
-		    elapsed_time);
+            __u64 end_time = bpf_ktime_get_ns();
+            __u64 elapsed_time = end_time - *start_time;
+            bpf_printk("[TC] Total RTT (SYN - FIN-ACK) for %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u: %llu ns\n",
+                       (key.src_ip >> 24) & 0xFF, (key.src_ip >> 16) & 0xFF, (key.src_ip >> 8) & 0xFF, key.src_ip & 0xFF, key.src_port,
+                       (key.dst_ip >> 24) & 0xFF, (key.dst_ip >> 16) & 0xFF, (key.dst_ip >> 8) & 0xFF, key.dst_ip & 0xFF, key.dst_port,
+                       elapsed_time);
             bpf_map_delete_elem(&conn_map, &key);
-            bpf_printk("Debug - Reach End");
         }
     }
+
     return TC_ACT_OK;
 }
 

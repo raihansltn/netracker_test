@@ -60,7 +60,7 @@ int tc_ingress(struct __sk_buff *ctx) {
         };
 
         __u64 start_time = bpf_ktime_get_ns();
-        bpf_printk("Debug - Adding conn key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port); 
+        //bpf_printk("Debug - Adding conn key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port); 
         bpf_map_update_elem(&conn_map, &key, &start_time, BPF_ANY);
     }
     return TC_ACT_OK;
@@ -99,7 +99,7 @@ int tc_egress(struct __sk_buff *ctx) {
             .src_port = bpf_ntohs(tcp->dest),
             .dst_port = bpf_ntohs(tcp->source),
         };
-        bpf_printk("Debug - Looking for FIN-ACK key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
+        //bpf_printk("Debug - Looking for FIN-ACK key: %u:%u -> %u:%u", key.src_ip, key.src_port, key.dst_ip, key.dst_port);
         __u64 *start_time = bpf_map_lookup_elem(&conn_map, &key);
         if (start_time) {
             __u64 end_time = bpf_ktime_get_ns();
